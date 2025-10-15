@@ -1,0 +1,363 @@
+---
+title: "PM 566 HW 02"
+author: "Ziquan 'Harrison' Liu"
+format: 
+  html:
+    embed-resources: true
+fig-width: 8
+fig-heigth: 6
+---
+# Packages
+```{r}
+library(nycflights13)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(maps)
+```
+# Check on all description of dataset
+```{r}
+summary(flights)
+summary(airlines)
+summary(airports)
+summary(planes)
+summary(weather)
+```
+# standardize time
+```{r}
+# helper: convert HHMM integer time (e.g., 517) to hour-of-day on [0,24)
+to_hour <- function(x) ifelse(is.na(x), NA_real_, (x %/% 100) %% 24 + (x %% 100)/60)
+
+# helper: map hour to part-of-day
+part_of_day <- function(hour) {
+  cut(hour,
+      breaks = c(0, 6, 12, 18, 24),
+      labels = c("early morning", "morning", "afternoon", "evening"),
+      right = FALSE, include.lowest = TRUE)
+}
+```
+# Question 1
+```{r}
+top10_dest <- flights %>%
+  count(dest, sort = TRUE, name = "n_flights") %>%
+  slice_head(n = 10)
+top10_dest
+```
+##
+
+# Question 2
+```{r}
+flights2 <- flights %>%
+  mutate(
+    dep_hour = to_hour(dep_time),
+    arr_hour = to_hour(arr_time),
+    dep_part = part_of_day(dep_hour),
+    arr_part = part_of_day(arr_hour)
+  )
+
+# barplots
+## select corlor
+pal <- c(
+  "early morning" = "lightblue1",
+  "morning"       = "darkblue",
+  "afternoon"     = "violet",
+  "evening"       = "purple4"
+)
+
+ggplot(flights2, aes(x = dep_part, fill = dep_part)) +
+  geom_bar() +
+  scale_x_discrete(na.translate = FALSE) +         # mute NA category
+  scale_fill_manual(values = pal, na.translate = FALSE) + 
+  labs(x = "Departure part of day", y = "Flights",
+       title = "Flights by departure time category") +
+  guides(fill = guide_legend(title = "Departure")) +
+  theme_minimal()
+
+ggplot(flights2, aes(x = arr_part, fill = arr_part)) +
+  geom_bar() +
+  scale_x_discrete(na.translate = FALSE) +         
+  scale_fill_manual(values = pal, na.translate = FALSE) +
+  labs(x = "Arrival part of day", y = "Flights",
+       title = "Flights by arrival time category") +
+  guides(fill = guide_legend(title = "Arrival")) +
+  theme_minimal()
+
+# % red-eye = depart in afternoon/evening AND arrive in early morning/morning
+valid <- flights2 %>% filter(!is.na(dep_part), !is.na(arr_part))
+red_eye <- valid %>%
+  mutate(is_redeye = dep_part %in% c("afternoon","evening") &
+                     arr_part %in% c("early morning","morning")) %>%
+  summarise(
+    n = n(),
+    n_redeye = sum(is_redeye),
+    pct_redeye = 100 * n_redeye / n
+  )
+
+red_eye
+```
+##
+
+# Question 3
+```{r}
+# unique tailnum–carrier pairs with airline names
+tail_carriers <- flights %>%
+  filter(!is.na(tailnum), tailnum != "", !is.na(carrier)) %>%
+  distinct(tailnum, carrier) %>%
+  left_join(airlines, by = "carrier")
+
+# count distinct carriers per plane, keep those with >1
+multi_airline_planes <- tail_carriers %>%
+  group_by(tailnum) %>%
+  summarise(
+    n_airlines = n_distinct(carrier),
+    airlines = paste(sort(unique(name)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  filter(n_airlines > 1) %>%
+  arrange(desc(n_airlines), tailnum)
+
+# how many such planes?
+n_multi_planes <- nrow(multi_airline_planes)
+
+n_multi_planes
+multi_airline_planes
+```
+##
+
+# Question 4
+```{r}
+# The missing key is: weather$origin  <->  airports$faa
+# Example join to attach airport metadata to each weather row:
+weather_with_airport <- weather %>%
+  left_join(airports %>% select(faa, name, lat, lon, tz), by = c("origin" = "faa"))
+
+# peek to confirm the relationship
+weather_with_airport %>% select(origin, name, time_hour) %>% slice_head(n = 5)
+```
+##
+
+# Question 5
+```{r}
+# 5a. Make an hourly key in `weather` and count duplicate keys
+weather_keyed <- weather %>%
+  mutate(
+    hw_key = str_c(year, month, day, hour, origin, sep = "-")
+  )
+
+dup_count <- sum(duplicated(weather_keyed$hw_key))
+dup_breakdown <- weather_keyed %>%
+  count(year, month, day, hour, origin, name = "n") %>%
+  arrange(desc(n)) %>%
+  filter(n > 1)
+
+dup_count
+head(dup_breakdown)
+# Interpretation:
+# The combination (year, month, day, hour, origin) is *usually* unique,
+# but duplicates occur because multiple measurements can be recorded
+# within the same hour at an airport (e.g., corrections/updates), so we
+# occasionally get >1 row per hour per origin.
+```
+## 
+```{r}
+# 5b. Merge weather onto each flight by scheduled departure hour & origin
+fl_wx <- flights %>%
+  select(year, month, day, dep_time, sched_dep_time, dep_delay, arr_delay,
+         origin, dest, time_hour, flight, carrier, tailnum) %>%
+  left_join(weather %>% select(origin, time_hour, temp, dewp, humid, wind_dir,
+                               wind_speed, wind_gust, precip, pressure, visib),
+            by = c("origin","time_hour"))
+
+dim(fl_wx); fl_wx %>% glimpse()
+# Each flight now carries the *departure-hour* weather at its origin.
+
+```
+## 
+
+# Question 6
+```{r}
+# Construct a few weather “flags” helpful for EDA
+fl_wx2 <- fl_wx %>%
+  mutate(
+    rain     = precip > 0,
+    heavy_r  = precip >= 0.25,        # adjustable threshold (inches)
+    low_vis  = visib < 3,             # < 3 miles visibility
+    hi_wind  = wind_speed >= 20,      # sustained high wind
+    gusty    = !is.na(wind_gust) & wind_gust >= 30,
+    cold     = temp <= 32,
+    hot      = temp >= 90
+  )
+
+# Step 2: What’s missing & ranges?
+fl_wx2 %>%
+  summarise(across(c(dep_delay, precip, visib, wind_speed, wind_gust,
+                     temp, humid, pressure),
+                   list(miss = ~sum(is.na(.)),
+                        min  = ~min(., na.rm = TRUE),
+                        p50  = ~median(., na.rm = TRUE),
+                        max  = ~max(., na.rm = TRUE)))) %>%
+  tidyr::pivot_longer(everything())
+
+# Step 3: Single-variable distributions (delays)
+ggplot(filter(fl_wx2, !is.na(dep_delay)), aes(x = dep_delay)) +
+  geom_histogram(bins = 80) +
+  coord_cartesian(xlim = c(-50, 250)) +
+  labs(title = "Departure delay distribution", x = "Minutes", y = "Flights")
+
+# Step 4: Bivariate—delays vs. key weather features (binning for robustness)
+# Mean delay by weather flags
+by_flags <- fl_wx2 %>%
+  filter(!is.na(dep_delay)) %>%
+  summarise(
+    n        = n(),
+    mean_delay = mean(dep_delay, na.rm = TRUE),
+    rain      = mean(dep_delay[rain],    na.rm = TRUE),
+    norain    = mean(dep_delay[!rain],   na.rm = TRUE),
+    heavy_r   = mean(dep_delay[heavy_r], na.rm = TRUE),
+    low_vis   = mean(dep_delay[low_vis], na.rm = TRUE),
+    hi_wind   = mean(dep_delay[hi_wind], na.rm = TRUE),
+    gusty     = mean(dep_delay[gusty],   na.rm = TRUE),
+    cold      = mean(dep_delay[cold],    na.rm = TRUE),
+    hot       = mean(dep_delay[hot],     na.rm = TRUE)
+  )
+by_flags
+
+# Continuous relationships with smoothing
+p1 <- ggplot(fl_wx2, aes(precip, dep_delay)) +
+  geom_point(alpha = 0.08) + geom_smooth(se = FALSE) +
+  coord_cartesian(xlim = c(0, 1.0), ylim = c(-20, 200)) +
+  labs(title = "Delay vs precipitation")
+
+p2 <- ggplot(fl_wx2, aes(visib, dep_delay)) +
+  geom_point(alpha = 0.08) + geom_smooth(se = FALSE) +
+  coord_cartesian(xlim = c(0, 10), ylim = c(-20, 200)) +
+  labs(title = "Delay vs visibility (miles)")
+
+p3 <- ggplot(fl_wx2, aes(wind_speed, dep_delay)) +
+  geom_point(alpha = 0.08) + geom_smooth(se = FALSE) +
+  coord_cartesian(xlim = c(0, 40), ylim = c(-20, 200)) +
+  labs(title = "Delay vs sustained wind (mph)")
+
+p1; p2; p3
+
+# Step 5: A quick multivariable check (not causal, just descriptive)
+fit_eda <- lm(dep_delay ~ precip + visib + wind_speed + wind_gust +
+                humid + temp + pressure, data = fl_wx2)
+summary(fit_eda)
+```
+##
+
+# Question 7
+```{r}
+# Helper to keep only flights with a reported dep_delay
+fw <- fl_wx2 %>% filter(!is.na(dep_delay))
+
+# 7a. Average departure delay by *day*
+daily <- fw %>%
+  group_by(year, month, day) %>%
+  summarise(avg_dep_delay = mean(dep_delay), n = n(), .groups = "drop") %>%
+  arrange(desc(avg_dep_delay))
+head(daily, 1)    # worst day
+
+# 7b. By day × origin
+daily_org <- fw %>%
+  group_by(origin, year, month, day) %>%
+  summarise(avg_dep_delay = mean(dep_delay), n = n(), .groups = "drop") %>%
+  arrange(desc(avg_dep_delay))
+head(daily_org, 1) # worst airport-day
+
+# 7c. By hour × origin
+hourly_org <- fw %>%
+  mutate(hour = hour(time_hour)) %>%
+  group_by(origin, year, month, day, hour) %>%
+  summarise(avg_dep_delay = mean(dep_delay), n = n(), .groups = "drop") %>%
+  arrange(desc(avg_dep_delay))
+head(hourly_org, 1) # worst airport-hour
+```
+##
+
+# Question 8
+```{r}
+# Average arrival delay by destination airport (dest)
+dest_avgs <- flights %>%
+  filter(!is.na(arr_delay)) %>%
+  group_by(dest) %>%
+  summarise(avg_arr_delay = mean(arr_delay), n = n(), .groups = "drop")
+
+airports_delay <- airports %>%
+  inner_join(dest_avgs, by = c("faa" = "dest"))
+
+usa <- map_data("state")
+
+ggplot() +
+  geom_polygon(data = usa, aes(long, lat, group = group),
+               fill = "grey95", color = "white") +
+  geom_point(data = airports_delay,
+             aes(lon, lat, color = avg_arr_delay, size = n),
+             alpha = 0.85) +
+  scale_color_viridis_c(option = "plasma", name = "Avg\narrival delay") +
+  scale_size_continuous(range = c(1, 6), name = "Flights") +
+  coord_quickmap() +
+  labs(title = "Spatial distribution of average arrival delays (2013)",
+       subtitle = "Points sized by traffic volume, colored by average delay (minutes)",
+       x = NULL, y = NULL) +
+  theme_minimal()
+```
+##
+
+# Question 9
+```{r}
+# Bin continuous weather into quintiles and compare mean delays between extremes
+bin_compare <- function(x, y = fl_wx2$dep_delay, k = 5) {
+  q <- quantile(x, probs = seq(0, 1, length.out = k + 1), na.rm = TRUE)
+  g <- cut(x, breaks = unique(q), include.lowest = TRUE)
+  tibble(g, y) %>%
+    group_by(g) %>%
+    summarise(mean_delay = mean(y, na.rm = TRUE), .groups = "drop") %>%
+    mutate(bin = row_number())
+}
+
+res_precip <- bin_compare(fl_wx2$precip)
+res_visib  <- bin_compare(fl_wx2$visib)
+res_wspd   <- bin_compare(fl_wx2$wind_speed)
+res_wgst   <- bin_compare(fl_wx2$wind_gust)
+
+# Rank variables by (top-bin mean – bottom-bin mean)
+impact_rank <- tibble(
+  variable = c("precip", "visibility", "wind_speed", "wind_gust"),
+  diff     = c(diff(range(res_precip$mean_delay, na.rm = TRUE)),
+               diff(range(res_visib$mean_delay,  na.rm = TRUE)),
+               diff(range(res_wspd$mean_delay,   na.rm = TRUE)),
+               diff(range(res_wgst$mean_delay,   na.rm = TRUE)))
+) %>% arrange(desc(diff))
+
+impact_rank
+
+# Clear, compact comparisons with flag variables
+flag_summary <- fl_wx2 %>%
+  filter(!is.na(dep_delay)) %>%
+  tidyr::pivot_longer(c(rain, heavy_r, low_vis, hi_wind, gusty, cold, hot),
+                      names_to = "condition", values_to = "on") %>%
+  group_by(condition, on) %>%
+  summarise(mean_delay = mean(dep_delay), n = n(), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = on, values_from = c(mean_delay, n), names_prefix = "on_") %>%
+  mutate(delta = mean_delay_on_TRUE - mean_delay_on_FALSE) %>%
+  arrange(desc(delta))
+
+flag_summary
+
+# Visual: mean delay by weather bins
+ggplot(res_precip, aes(bin, mean_delay)) +
+  geom_col() + labs(title = "Mean delay across precipitation quintiles",
+                    x = "Precipitation quintile (low → high)", y = "Mean dep delay")
+
+ggplot(res_visib, aes(bin, mean_delay)) +
+  geom_col() + labs(title = "Mean delay across visibility quintiles",
+                    x = "Visibility quintile (low → high)", y = "Mean dep delay")
+
+ggplot(res_wspd, aes(bin, mean_delay)) +
+  geom_col() + labs(title = "Mean delay across wind speed quintiles",
+                    x = "Wind speed quintile (low → high)", y = "Mean dep delay")
+```
+##
