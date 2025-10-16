@@ -356,17 +356,17 @@ sum_precip; sum_wind; sum_visib                                  # print summari
 ```{r}
 # 9c) Visualization: which look worst?
 ggplot(sum_precip, aes(precip_bin, mean_dep_delay)) +
-  geom_col() +
+  geom_col(fill = "purple4", color = "white") +  # select color 
   labs(title = "Mean departure delay by precipitation bin",
        x = "Precipitation (inches)", y = "Mean dep delay (min)")
 
 ggplot(sum_wind, aes(wind_bin, mean_dep_delay)) +
-  geom_col() +
+  geom_col(fill = "yellow", color = "white") +
   labs(title = "Mean departure delay by wind speed bin",
        x = "Wind speed (mph)", y = "Mean dep delay (min)")
 
 ggplot(sum_visib, aes(visib_bin, mean_dep_delay)) +
-  geom_col() +
+  geom_col(fill = "lightblue4", color = "white") +
   labs(title = "Mean departure delay by visibility bin",
        x = "Visibility (miles)", y = "Mean dep delay (min)")
 ```
@@ -377,8 +377,20 @@ col_wind    <- "#d62728"      # wind color
 col_visib   <- "#2ca02c"      # visibility color
 col_points  <- "grey35"       # point cloud color
 col_smooth  <- "#9467bd"      # smooth line color
-col_bins    <- c("#f7fbff", "#6baed6", "#08306b")          # low→mid→high for heatmaps
+col_bins    <- c("lightblue1", "#6baed6", "#08306b")          # low→mid→high for heatmaps
 col_corr    <- c("#b2182b", "#f7f7f7", "#2166ac")          # neg→0→pos for corr heatmap
+```
+```{r}
+# Bin the weather variables once
+fw_binned <- flights_weather %>%
+  mutate(
+    precip_bin = cut(precip, breaks = c(-Inf, 0, 0.1, 0.5, 1, Inf),
+                     labels = c("0", "(0,0.1]", "(0.1,0.5]", "(0.5,1]", ">1")),
+    wind_bin   = cut(wind_speed, breaks = c(-Inf, 5, 10, 20, Inf),
+                     labels = c("≤5", "(5,10]", "(10,20]", ">20")),
+    visib_bin  = cut(visib, breaks = c(-Inf, 2, 5, 10, Inf),
+                     labels = c("≤2", "(2,5]", "(5,10]", ">10"))
+  )
 ```
 ```{r}
 # helpful trimmed view (reduce long tail to make box/violin readable)
@@ -389,7 +401,6 @@ ggplot(fw_binned, aes(precip_bin, dep_delay)) +
   coord_cartesian(ylim = q_lim) +
   labs(title = "Violin + box: delay by precipitation", x = "Precipitation bin", y = "Dep delay (min)") +
   theme_minimal()
-
 ggplot(fw_binned, aes(wind_bin, dep_delay)) +
   geom_violin(fill = scales::alpha(col_wind, .6), color = NA, na.rm = TRUE) +
   geom_boxplot(width = .15, outlier.size = .5, fill ="purple4", na.rm = TRUE) +
@@ -403,7 +414,6 @@ ggplot(fw_binned, aes(visib_bin, dep_delay)) +
   coord_cartesian(ylim = q_lim) +
   labs(title = "Violin + box: delay by visibility", x = "Visibility bin", y = "Dep delay (min)") +
   theme_minimal()
-
 ```
 ```{r}
 # Hexbin
@@ -444,6 +454,80 @@ ggcorrplot::ggcorrplot(
   ggtitle("Spearman correlation: delays vs weather")
 
 ```
+```{r}
+# Colors for selection
+col_humid   <- "#1b9e77"   # humidity color
+col_press   <- "#d95f02"   # pressure color
+col_points  <- "grey35"    # scatter points
+col_smooth  <- "#7570b3"   # smooth line
+
+# Trim extreme delays just for plotting readability
+q_lim <- quantile(flights_weather$dep_delay, c(.02, .98), na.rm = TRUE)
+```
+```{r}
+fw_hp <- flights_weather %>%
+  mutate(
+    # Humidity ranges 0–100 (%). Adjust bins if you prefer.
+    humid_bin = cut(humid,
+                    breaks = c(-Inf, 30, 60, 80, Inf),
+                    labels = c("≤30%", "(30,60%]", "(60,80%]", ">80%")),
+    # Pressure is in millibars (hPa) in nycflights13; typical ~980–1040.
+    pressure_bin = cut(pressure,
+                       breaks = c(-Inf, 990, 1005, 1020, Inf),
+                       labels = c("<990", "990–1005", "1005–1020", ">1020"))
+  )
+
+sum_humid <- fw_hp %>%
+  group_by(humid_bin) %>%
+  summarise(mean_dep_delay = mean(dep_delay, na.rm = TRUE),
+            n = n(), .groups = "drop") %>%
+  arrange(desc(mean_dep_delay))
+
+sum_press <- fw_hp %>%
+  group_by(pressure_bin) %>%
+  summarise(mean_dep_delay = mean(dep_delay, na.rm = TRUE),
+            n = n(), .groups = "drop") %>%
+  arrange(desc(mean_dep_delay))
+
+sum_humid; sum_press  # look at which bins have larger delays
+
+```
+```{r}
+# Humidity
+ggplot(fw_hp, aes(humid_bin, dep_delay)) +
+  geom_violin(fill = scales::alpha(col_humid, .6), color = NA, na.rm = TRUE) +
+  geom_boxplot(width = .15, fill = "darkblue", outlier.alpha = .15, na.rm = TRUE) +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Departure delay by humidity", x = "Humidity bin", y = "Dep delay (min)") +
+  theme_minimal()
+
+# Pressure
+ggplot(fw_hp, aes(pressure_bin, dep_delay)) +
+  geom_violin(fill = scales::alpha(col_press, .6), color = NA, na.rm = TRUE) +
+  geom_boxplot(width = .15, fill = "darkblue", outlier.alpha = .15, na.rm = TRUE) +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Departure delay by pressure", x = "Pressure bin (hPa)", y = "Dep delay (min)") +
+  theme_minimal()
+```
+```{r}
+# Hexbin heatmaps (stable with huge n)
+col_bins2  <- c("violet", "purple", "purple4")          # low→mid→high for heatmaps
+
+ggplot(flights_weather, aes(humid, dep_delay)) +
+  geom_hex(bins = 40, na.rm = TRUE) +
+  scale_fill_gradientn(colors = col_bins2, name = "Count") +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Binned heatmap: delay vs humidity", x = "Humidity (%)", y = "Dep delay (min)") +
+  theme_minimal()
+
+ggplot(flights_weather, aes(pressure, dep_delay)) +
+  geom_hex(bins = 40, na.rm = TRUE) +
+  scale_fill_gradientn(colors = col_bins2, name = "Count") +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Binned heatmap: delay vs pressure", x = "Pressure (hPa)", y = "Dep delay (min)") +
+  theme_minimal()
+
+```
 
 ```{r}
 # 9d) A quick, robust “top factors” display using partial dependence style smooths
@@ -465,4 +549,4 @@ ggplot(flights_weather, aes(visib, dep_delay)) +
   labs(title = "Binned heatmap: dep delay vs visibility",
        x = "Visibility (miles)", y = "Dep delay (min)", fill = "Count")
 ```
-## Reports: Based on the plots above, in summation, hgiher pressure, higher humidity, higher precipitation, higher wind speed, and lower visibility showed the relatively strongest associations with larger delays.
+## Reports: In my opinion, I treated “impact” as a shift in the distribution of departure delay, not just referred to single correlation, because delays are heavy-tailed and zero-inflated. Given to such understanding, based on the plots above, precipitation had the strongest impact. The violin-box plot by precipitation bin showed large right-shift and dramatic spread as precipitation increases, with the >1 inch bin having a much higher median and very long upper tail.The mean delay by precipitation bin rises steeply (≈10 min on dry days to ~100+ min when >1 inch). Therefore,  precipitation showed a large absolute effect on delay minutes and increases the chance of extreme delays. In summation, heavy precipitation is the dominant driver of longer and more variable departure delays, followed by poor visibility and high winds; humidity, pressure, and temperature show at relatively weak associations.
