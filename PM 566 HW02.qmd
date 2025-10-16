@@ -15,6 +15,19 @@ library(ggplot2)
 library(lubridate)
 library(stringr)
 library(maps)
+library(tidyverse)
+library(scales)
+library(janitor)
+library(knitr)
+library(leaflet)
+library(forcats)
+library(tidytext)
+library(magrittr)
+library(rstatix)
+library(tidyr)
+library(patchwork)  # to collect guides into one legend
+library(hexbin)
+library(ggcorrplot)
 ```
 # Check on all description of dataset
 ```{r}
@@ -44,7 +57,7 @@ top10_dest <- flights %>%
   slice_head(n = 10)
 top10_dest
 ```
-##
+## Based on the result above, The top 10 most popular destinations with number of flights are as follows: ORD with 17283 flights, ATL with 17215 flights, LAX with 16174 flights, BOS with 15508 flights, MCO with 14082 flights, CLT with 14064 flights, SFO with 13331 flights, FLL with 12055 flights, MIA with 11728 flights, and DCA with 9705 flights.
 
 # Question 2
 ```{r}
@@ -82,64 +95,66 @@ ggplot(flights2, aes(x = arr_part, fill = arr_part)) +
        title = "Flights by arrival time category") +
   guides(fill = guide_legend(title = "Arrival")) +
   theme_minimal()
-
-# % red-eye = depart in afternoon/evening AND arrive in early morning/morning
-valid <- flights2 %>% filter(!is.na(dep_part), !is.na(arr_part))
-red_eye <- valid %>%
-  mutate(is_redeye = dep_part %in% c("afternoon","evening") &
-                     arr_part %in% c("early morning","morning")) %>%
-  summarise(
-    n = n(),
-    n_redeye = sum(is_redeye),
-    pct_redeye = 100 * n_redeye / n
-  )
-
-red_eye
 ```
-##
+```{r}
+valid <- flights2 %>%                                   # flights2 has dep_part & arr_part already
+  filter(!is.na(dep_part), !is.na(arr_part))            # keep only rows with both parts defined (drops NAs -> e.g.: cancelled/diverted)
+# generate red_eye
+red_eye <- valid %>%                                    # work on the valid data
+  mutate(is_redeye =                                     # create a logical flag: is this flight a "red-eye"?
+           dep_part %in% c("afternoon","evening") &      # TRUE if it departs in the afternoon or evening
+           arr_part %in% c("early morning","morning")) %>% # AND TRUE if arrives in early morning or morning
+  summarise(                                             # collapse into a 1-row summary
+    n = n(),                                             # denominator: number of flights after the NA filter
+    n_redeye = sum(is_redeye),                           # count of red-eye flights (TRUEs sum to integers)
+    pct_redeye = 100 * n_redeye / n                      # percentage of red-eye flights
+  )
+red_eye                                                  # print the summary table
+```
+## Based on the result above, after rmoved NA, the barplots are above. The percentage of flights were “red eye” flights was about 3.28%.
 
 # Question 3
 ```{r}
-# unique tailnum–carrier pairs with airline names
-tail_carriers <- flights %>%
-  filter(!is.na(tailnum), tailnum != "", !is.na(carrier)) %>%
-  distinct(tailnum, carrier) %>%
-  left_join(airlines, by = "carrier")
-
+tail_carriers <- flights %>%                                           
+  filter(!is.na(tailnum), tailnum != "", !is.na(carrier)) %>%          # keep rows with a valid tail number and carrier
+  distinct(tailnum, carrier) %>%                                       # reduce to unique tailnum–carrier pairs
+  left_join(airlines, by = "carrier")                                  # attach full airline names via carrier code
 # count distinct carriers per plane, keep those with >1
-multi_airline_planes <- tail_carriers %>%
-  group_by(tailnum) %>%
+multi_airline_planes <- tail_carriers %>%                              # work on the unique pairs
+  group_by(tailnum) %>%                                                # one summary per aircraft (tail number)
   summarise(
-    n_airlines = n_distinct(carrier),
-    airlines = paste(sort(unique(name)), collapse = ", "),
-    .groups = "drop"
+    n_airlines = n_distinct(carrier),                                  # how many different carriers flew this plane
+    airlines   = paste(sort(unique(name)), collapse = ", "),           # list those carriers’ names, alphabetically
+    .groups    = "drop"                                                # return an ungrouped data frame
   ) %>%
-  filter(n_airlines > 1) %>%
-  arrange(desc(n_airlines), tailnum)
-
+  filter(n_airlines > 1) %>%                                           # keep only planes that served >1 airline
+  arrange(desc(n_airlines), tailnum)                                   # order by most carriers, then by tail number
 # how many such planes?
-n_multi_planes <- nrow(multi_airline_planes)
+n_multi_planes <- nrow(multi_airline_planes)                           # count how many such planes there are
+n_multi_planes                                                         # print count
+multi_airline_planes                                                   # print detailed table
 
-n_multi_planes
-multi_airline_planes
 ```
-##
+## Based on the result above, there are 17 in total planes that flew for multiple airlines. Such airlines were: Endeavor Air Inc., ExpressJet Airlines Inc., and AirTran Airways Corporation, Delta Air Lines Inc..
 
 # Question 4
+```{r}
+table(weather$origin)
+table(airports$faa)
+```
+
 ```{r}
 # The missing key is: weather$origin  <->  airports$faa
 # Example join to attach airport metadata to each weather row:
 weather_with_airport <- weather %>%
   left_join(airports %>% select(faa, name, lat, lon, tz), by = c("origin" = "faa"))
-
 # peek to confirm the relationship
 weather_with_airport %>% select(origin, name, time_hour) %>% slice_head(n = 5)
 ```
-##
+## Reports: After reviewing the dataset, the missing relationship between weather and airports datasets was the code of ariline (weather$origin and airports$faa). In the weather datasets, the "origin" colomn has only three airports categories (EWR, JFK, and LGA). The coding above was my conducting to merge two datasets based on the weather$origin and airports$faa.
 
 # Question 5
 ```{r}
-# 5a. Make an hourly key in `weather` and count duplicate keys
 weather_keyed <- weather %>%
   mutate(
     hw_key = str_c(year, month, day, hour, origin, sep = "-")
@@ -153,105 +168,105 @@ dup_breakdown <- weather_keyed %>%
 
 dup_count
 head(dup_breakdown)
-# Interpretation:
-# The combination (year, month, day, hour, origin) is *usually* unique,
-# but duplicates occur because multiple measurements can be recorded
-# within the same hour at an airport (e.g., corrections/updates), so we
-# occasionally get >1 row per hour per origin.
 ```
-## 
+## Reports: Based on the result above, there are 3 pairs of duplicated values. It might because multiple measurements can be recorded within the same hour at an airport. Therefore, we got >1 row per  hour origin.
+
+# Merge weather onto each flight by scheduled departure hour & origin
 ```{r}
-# 5b. Merge weather onto each flight by scheduled departure hour & origin
-fl_wx <- flights %>%
+flights_weather <- flights %>%
   select(year, month, day, dep_time, sched_dep_time, dep_delay, arr_delay,
          origin, dest, time_hour, flight, carrier, tailnum) %>%
   left_join(weather %>% select(origin, time_hour, temp, dewp, humid, wind_dir,
                                wind_speed, wind_gust, precip, pressure, visib),
             by = c("origin","time_hour"))
 
-dim(fl_wx); fl_wx %>% glimpse()
+dim(flights_weather); flights_weather %>% glimpse()
 # Each flight now carries the *departure-hour* weather at its origin.
-
 ```
-## 
 
 # Question 6
+## For this question, I referred the checklist from the lecture slide in the 3rd week (EDA Checklist: The goal of EDA is to better understand your data. Let’s use the checklist:
+### 2. Check the size of the data
+### 3. Examine the variables and their types
+### 4. Look at the top and bottom of the data
+### 5. Visualize the distributions of key variables
 ```{r}
-# Construct a few weather “flags” helpful for EDA
-fl_wx2 <- fl_wx %>%
-  mutate(
-    rain     = precip > 0,
-    heavy_r  = precip >= 0.25,        # adjustable threshold (inches)
-    low_vis  = visib < 3,             # < 3 miles visibility
-    hi_wind  = wind_speed >= 20,      # sustained high wind
-    gusty    = !is.na(wind_gust) & wind_gust >= 30,
-    cold     = temp <= 32,
-    hot      = temp >= 90
-  )
+# 6a) Size of the data
+nrow(flights_weather)      # number of rows (flights)
+ncol(flights_weather)      # number of columns (variables)
 
-# Step 2: What’s missing & ranges?
-fl_wx2 %>%
-  summarise(across(c(dep_delay, precip, visib, wind_speed, wind_gust,
-                     temp, humid, pressure),
-                   list(miss = ~sum(is.na(.)),
-                        min  = ~min(., na.rm = TRUE),
-                        p50  = ~median(., na.rm = TRUE),
-                        max  = ~max(., na.rm = TRUE)))) %>%
-  tidyr::pivot_longer(everything())
+# 6b) Examine variables and their types
+glimpse(flights_weather)   # compact structure: names, types, and example values
 
-# Step 3: Single-variable distributions (delays)
-ggplot(filter(fl_wx2, !is.na(dep_delay)), aes(x = dep_delay)) +
-  geom_histogram(bins = 80) +
-  coord_cartesian(xlim = c(-50, 250)) +
-  labs(title = "Departure delay distribution", x = "Minutes", y = "Flights")
+# 6c) Look at the top and bottom of the data
+head(flights_weather, 5)   # first 5 rows
+tail(flights_weather, 5)   # last 5 rows
 
-# Step 4: Bivariate—delays vs. key weather features (binning for robustness)
-# Mean delay by weather flags
-by_flags <- fl_wx2 %>%
-  filter(!is.na(dep_delay)) %>%
-  summarise(
-    n        = n(),
-    mean_delay = mean(dep_delay, na.rm = TRUE),
-    rain      = mean(dep_delay[rain],    na.rm = TRUE),
-    norain    = mean(dep_delay[!rain],   na.rm = TRUE),
-    heavy_r   = mean(dep_delay[heavy_r], na.rm = TRUE),
-    low_vis   = mean(dep_delay[low_vis], na.rm = TRUE),
-    hi_wind   = mean(dep_delay[hi_wind], na.rm = TRUE),
-    gusty     = mean(dep_delay[gusty],   na.rm = TRUE),
-    cold      = mean(dep_delay[cold],    na.rm = TRUE),
-    hot       = mean(dep_delay[hot],     na.rm = TRUE)
-  )
-by_flags
+# 6d) Visualize distributions of key variables related to delays & weather
+# Departure delay distribution (trim extreme to visualize; delays are in minutes)
+ggplot(flights_weather, aes(x = dep_delay)) +                   # histogram of departure delay
+  geom_histogram(binwidth = 5, fill = "#1f78b4", color = "purple4") +                                # 5-minute bins, color
+  coord_cartesian(xlim = c(-50, 200)) +                         # focus on common range
+  labs(title = "Departure delay distribution", x = "Minutes", y = "Count")
 
-# Continuous relationships with smoothing
-p1 <- ggplot(fl_wx2, aes(precip, dep_delay)) +
-  geom_point(alpha = 0.08) + geom_smooth(se = FALSE) +
-  coord_cartesian(xlim = c(0, 1.0), ylim = c(-20, 200)) +
-  labs(title = "Delay vs precipitation")
+# Weather: precipitation (many zeros, heavy right tail)
+ggplot(flights_weather, aes(x = precip)) +
+  geom_histogram(binwidth = 0.1, fill = "yellow1", color = "purple4") +
+  coord_cartesian(xlim = c(0, 2)) +
+  labs(title = "Precipitation (inches) distribution", x = "Precip", y = "Count")
 
-p2 <- ggplot(fl_wx2, aes(visib, dep_delay)) +
-  geom_point(alpha = 0.08) + geom_smooth(se = FALSE) +
-  coord_cartesian(xlim = c(0, 10), ylim = c(-20, 200)) +
-  labs(title = "Delay vs visibility (miles)")
+# Weather: wind speed
+ggplot(flights_weather, aes(x = wind_speed)) +
+  geom_histogram(binwidth = 1,fill = "lightblue4", color = "purple4") +
+  labs(title = "Wind speed distribution", x = "Wind speed (mph)", y = "Count")
 
-p3 <- ggplot(fl_wx2, aes(wind_speed, dep_delay)) +
-  geom_point(alpha = 0.08) + geom_smooth(se = FALSE) +
-  coord_cartesian(xlim = c(0, 40), ylim = c(-20, 200)) +
-  labs(title = "Delay vs sustained wind (mph)")
-
-p1; p2; p3
-
-# Step 5: A quick multivariable check (not causal, just descriptive)
-fit_eda <- lm(dep_delay ~ precip + visib + wind_speed + wind_gust +
-                humid + temp + pressure, data = fl_wx2)
-summary(fit_eda)
+# Weather: visibility
+ggplot(flights_weather, aes(x = visib)) +
+  geom_histogram(binwidth = 1, fill = "#7570b3", color = "purple4") +
+  labs(title = "Visibility distribution", x = "Miles", y = "Count")
 ```
-##
+```{r}
+# Quick expectation check: scatter of dep_delay vs key weather features
+# Each plot maps a constant label to 'color' so a legend exists to collect
+p_wind <- ggplot(flights_weather, aes(wind_speed, dep_delay, color = "Wind speed")) +
+  geom_point(alpha = 0.05, size = 0.4, color = "purple4", na.rm = TRUE) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, size = 1) +
+  coord_cartesian(ylim = c(-30, 180)) +
+  labs(x = "Wind speed (mph)", y = "Departure delay (min)", color = NULL)
+
+p_prec <- ggplot(flights_weather, aes(precip, dep_delay, color = "Precipitation")) +
+  geom_point(alpha = 0.05, size = 0.4, color = "purple1", na.rm = TRUE) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, size = 1) +
+  coord_cartesian(xlim = c(0, 2), ylim = c(-30, 180)) +
+  labs(x = "Precip (inches)", y = NULL, color = NULL)
+
+p_vis  <- ggplot(flights_weather, aes(visib, dep_delay, color = "Visibility")) +
+  geom_point(alpha = 0.05, size = 0.4, color = "blue", na.rm = TRUE) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, size = 1) +
+  coord_cartesian(ylim = c(-30, 180)) +
+  labs(x = "Visibility (miles)", y = NULL, color = NULL)
+
+p_wind
+p_prec
+p_vis
+
+ggplot(
+  flights_weather %>%
+    filter(is.finite(dep_delay), is.finite(wind_speed)) %>%       # drop NAs first
+    slice_sample(n = 80000),                                      # smaller sample
+  aes(wind_speed, dep_delay)
+) +
+  geom_point(alpha = 0.08, size = 0.4, color = "lightblue4") +
+  geom_smooth(method = "loess", se = FALSE, span = 0.8) +         # LOESS on a sample is fine
+  coord_cartesian(ylim = c(-30, 180)) +
+  labs(title = "LOESS on a sample", x = "Wind speed (mph)", y = "Departure delay (min)")
+```
+## The result above are my performing follwed steps 2-5 of the EDA checklist presented in class.
 
 # Question 7
 ```{r}
 # Helper to keep only flights with a reported dep_delay
-fw <- fl_wx2 %>% filter(!is.na(dep_delay))
+fw <- flights_weather %>% filter(!is.na(dep_delay))
 
 # 7a. Average departure delay by *day*
 daily <- fw %>%
@@ -275,7 +290,7 @@ hourly_org <- fw %>%
   arrange(desc(avg_dep_delay))
 head(hourly_org, 1) # worst airport-hour
 ```
-##
+## Base on the result above, when grouping by day and day along with origin, the worst average departure delay occurred on March 8th with an average delay of 83.53692 minutes and 105.7249 minutes, repectively. The letter occurred on LGA. When grouping by hour and origin, the worst average departure delay occurred on July 28th at LGA at 9 PM with an average delay of 279.6667 minutes.
 
 # Question 8
 ```{r}
@@ -289,7 +304,8 @@ airports_delay <- airports %>%
   inner_join(dest_avgs, by = c("faa" = "dest"))
 
 usa <- map_data("state")
-
+summary(airports_delay$avg_arr_delay)
+# map
 ggplot() +
   geom_polygon(data = usa, aes(long, lat, group = group),
                fill = "grey95", color = "white") +
@@ -304,60 +320,149 @@ ggplot() +
        x = NULL, y = NULL) +
   theme_minimal()
 ```
-##
 
 # Question 9
 ```{r}
-# Bin continuous weather into quintiles and compare mean delays between extremes
-bin_compare <- function(x, y = fl_wx2$dep_delay, k = 5) {
-  q <- quantile(x, probs = seq(0, 1, length.out = k + 1), na.rm = TRUE)
-  g <- cut(x, breaks = unique(q), include.lowest = TRUE)
-  tibble(g, y) %>%
-    group_by(g) %>%
-    summarise(mean_delay = mean(y, na.rm = TRUE), .groups = "drop") %>%
-    mutate(bin = row_number())
-}
-
-res_precip <- bin_compare(fl_wx2$precip)
-res_visib  <- bin_compare(fl_wx2$visib)
-res_wspd   <- bin_compare(fl_wx2$wind_speed)
-res_wgst   <- bin_compare(fl_wx2$wind_gust)
-
-# Rank variables by (top-bin mean – bottom-bin mean)
-impact_rank <- tibble(
-  variable = c("precip", "visibility", "wind_speed", "wind_gust"),
-  diff     = c(diff(range(res_precip$mean_delay, na.rm = TRUE)),
-               diff(range(res_visib$mean_delay,  na.rm = TRUE)),
-               diff(range(res_wspd$mean_delay,   na.rm = TRUE)),
-               diff(range(res_wgst$mean_delay,   na.rm = TRUE)))
-) %>% arrange(desc(diff))
-
-impact_rank
-
-# Clear, compact comparisons with flag variables
-flag_summary <- fl_wx2 %>%
-  filter(!is.na(dep_delay)) %>%
-  tidyr::pivot_longer(c(rain, heavy_r, low_vis, hi_wind, gusty, cold, hot),
-                      names_to = "condition", values_to = "on") %>%
-  group_by(condition, on) %>%
-  summarise(mean_delay = mean(dep_delay), n = n(), .groups = "drop") %>%
-  tidyr::pivot_wider(names_from = on, values_from = c(mean_delay, n), names_prefix = "on_") %>%
-  mutate(delta = mean_delay_on_TRUE - mean_delay_on_FALSE) %>%
-  arrange(desc(delta))
-
-flag_summary
-
-# Visual: mean delay by weather bins
-ggplot(res_precip, aes(bin, mean_delay)) +
-  geom_col() + labs(title = "Mean delay across precipitation quintiles",
-                    x = "Precipitation quintile (low → high)", y = "Mean dep delay")
-
-ggplot(res_visib, aes(bin, mean_delay)) +
-  geom_col() + labs(title = "Mean delay across visibility quintiles",
-                    x = "Visibility quintile (low → high)", y = "Mean dep delay")
-
-ggplot(res_wspd, aes(bin, mean_delay)) +
-  geom_col() + labs(title = "Mean delay across wind speed quintiles",
-                    x = "Wind speed quintile (low → high)", y = "Mean dep delay")
+# 9a) Create binned weather categories to summarize relationships cleanly
+merged_binned <- flights_weather %>%
+  mutate(
+    precip_bin = cut(precip, breaks = c(-Inf, 0, 0.1, 0.5, 1, Inf),  # none, light, mod, heavy
+                     labels = c("0", "(0,0.1]", "(0.1,0.5]", "(0.5,1]", ">1")),
+    wind_bin   = cut(wind_speed, breaks = c(-Inf, 5, 10, 20, Inf),   # calm, light, breezy, high
+                     labels = c("≤5", "(5,10]", "(10,20]", ">20")),
+    visib_bin  = cut(visib, breaks = c(-Inf, 2, 5, 10, Inf),         # poor, fair, good, very good
+                     labels = c("≤2", "(2,5]", "(5,10]", ">10"))
+  )
 ```
-##
+```{r}
+# 9b) Summaries: mean departure delay by each phenomenon
+sum_precip <- merged_binned %>%
+  group_by(precip_bin) %>%
+  summarise(mean_dep_delay = mean(dep_delay, na.rm = TRUE), n = n()) %>%
+  arrange(desc(mean_dep_delay))
+
+sum_wind <- merged_binned %>%
+  group_by(wind_bin) %>%
+  summarise(mean_dep_delay = mean(dep_delay, na.rm = TRUE), n = n()) %>%
+  arrange(desc(mean_dep_delay))
+
+sum_visib <- merged_binned %>%
+  group_by(visib_bin) %>%
+  summarise(mean_dep_delay = mean(dep_delay, na.rm = TRUE), n = n()) %>%
+  arrange(mean_dep_delay)                                         # lower visibility → usually worse
+
+sum_precip; sum_wind; sum_visib                                  # print summaries
+```
+```{r}
+# 9c) Visualization: which look worst?
+ggplot(sum_precip, aes(precip_bin, mean_dep_delay)) +
+  geom_col() +
+  labs(title = "Mean departure delay by precipitation bin",
+       x = "Precipitation (inches)", y = "Mean dep delay (min)")
+
+ggplot(sum_wind, aes(wind_bin, mean_dep_delay)) +
+  geom_col() +
+  labs(title = "Mean departure delay by wind speed bin",
+       x = "Wind speed (mph)", y = "Mean dep delay (min)")
+
+ggplot(sum_visib, aes(visib_bin, mean_dep_delay)) +
+  geom_col() +
+  labs(title = "Mean departure delay by visibility bin",
+       x = "Visibility (miles)", y = "Mean dep delay (min)")
+```
+```{r}
+# Edit colors
+col_precip  <- "#1f77b4"      # precipitation color
+col_wind    <- "#d62728"      # wind color
+col_visib   <- "#2ca02c"      # visibility color
+col_points  <- "grey35"       # point cloud color
+col_smooth  <- "#9467bd"      # smooth line color
+col_bins    <- c("#f7fbff", "#6baed6", "#08306b")          # low→mid→high for heatmaps
+col_corr    <- c("#b2182b", "#f7f7f7", "#2166ac")          # neg→0→pos for corr heatmap
+```
+```{r}
+# helpful trimmed view (reduce long tail to make box/violin readable)
+q_lim <- quantile(flights_weather$dep_delay, c(.02, .98), na.rm = TRUE)
+ggplot(fw_binned, aes(precip_bin, dep_delay)) +
+  geom_violin(fill = scales::alpha(col_precip, .6), color = NA, na.rm = TRUE) +
+  geom_boxplot(width = .15, outlier.size = .5, fill = "purple4", na.rm = TRUE) +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Violin + box: delay by precipitation", x = "Precipitation bin", y = "Dep delay (min)") +
+  theme_minimal()
+
+ggplot(fw_binned, aes(wind_bin, dep_delay)) +
+  geom_violin(fill = scales::alpha(col_wind, .6), color = NA, na.rm = TRUE) +
+  geom_boxplot(width = .15, outlier.size = .5, fill ="purple4", na.rm = TRUE) +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Violin + box: delay by wind speed", x = "Wind speed bin", y = "Dep delay (min)") +
+  theme_minimal()
+
+ggplot(fw_binned, aes(visib_bin, dep_delay)) +
+  geom_violin(fill = scales::alpha(col_visib, .6), color = NA, na.rm = TRUE) +
+  geom_boxplot(width = .15, outlier.size = .5, fill = "purple4", na.rm = TRUE) +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Violin + box: delay by visibility", x = "Visibility bin", y = "Dep delay (min)") +
+  theme_minimal()
+
+```
+```{r}
+# Hexbin
+ggplot(flights_weather, aes(precip, dep_delay)) +
+  geom_hex(bins = 40, na.rm = TRUE) +
+  scale_fill_gradientn(colors = col_bins, name = "Count") +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Binned heatmap: delay vs precipitation", x = "Precip (in)", y = "Dep delay (min)") +
+  theme_minimal()
+
+ggplot(flights_weather, aes(wind_speed, dep_delay)) +
+  geom_hex(bins = 40, na.rm = TRUE) +
+  scale_fill_gradientn(colors = col_bins, name = "Count") +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Binned heatmap: delay vs wind speed", x = "Wind speed (mph)", y = "Dep delay (min)") +
+  theme_minimal()
+
+ggplot(flights_weather, aes(visib, dep_delay)) +
+  geom_hex(bins = 40, na.rm = TRUE) +
+  scale_fill_gradientn(colors = col_bins, name = "Count") +
+  coord_cartesian(ylim = q_lim) +
+  labs(title = "Binned heatmap: delay vs visibility", x = "Visibility (miles)", y = "Dep delay (min)") +
+  theme_minimal()
+```
+```{r}
+# select varaibles
+vars <- c("dep_delay", "precip", "wind_speed", "visib", "temp", "humid", "pressure")
+mat  <- flights_weather %>%
+  select(all_of(vars)) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  cor(use = "complete.obs", method = "spearman")  # Spearman more robust
+
+# using ggcorrplot
+ggcorrplot::ggcorrplot(
+  mat, hc.order = TRUE, type = "lower", lab = TRUE, outline.col = "white",
+  colors = col_corr, lab_size = 3
+) + 
+  ggtitle("Spearman correlation: delays vs weather")
+
+```
+
+```{r}
+# 9d) A quick, robust “top factors” display using partial dependence style smooths
+ggplot(flights_weather, aes(precip, dep_delay)) +
+  geom_bin2d(bins = 40) +
+  scale_fill_viridis_c() +
+  labs(title = "Binned heatmap: dep delay vs precipitation",
+       x = "Precip (inches)", y = "Dep delay (min)", fill = "Count")
+
+ggplot(flights_weather, aes(wind_speed, dep_delay)) +
+  geom_bin2d(bins = 40) +
+  scale_fill_viridis_c() +
+  labs(title = "Binned heatmap: dep delay vs wind speed",
+       x = "Wind speed (mph)", y = "Dep delay (min)", fill = "Count")
+
+ggplot(flights_weather, aes(visib, dep_delay)) +
+  geom_bin2d(bins = 40) +
+  scale_fill_viridis_c() +
+  labs(title = "Binned heatmap: dep delay vs visibility",
+       x = "Visibility (miles)", y = "Dep delay (min)", fill = "Count")
+```
+## Reports: Based on the plots above, in summation, hgiher pressure, higher humidity, higher precipitation, higher wind speed, and lower visibility showed the relatively strongest associations with larger delays.
